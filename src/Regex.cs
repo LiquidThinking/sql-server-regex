@@ -7,99 +7,104 @@ using System.Collections.Generic;
 
 public partial class UDF
 {
-    [Microsoft.SqlServer.Server.SqlFunction(IsDeterministic = true)]
-    public static SqlString Match(String input, String pattern)
-    {
-        if (String.IsNullOrEmpty(input) || String.IsNullOrEmpty(pattern))
-        {
-            return new SqlString(null);
-        }
-        else
-        {
-            Match m = Regex.Match(input, pattern);
+	private static readonly Dictionary<string, Regex> RegexCache = new Dictionary<string, Regex>();
 
-            return new SqlString(m.Success ? m.Value : null);
-        }
-    }
+	private static Regex GetRegex( string pattern )
+	{
+		if ( !RegexCache.ContainsKey( pattern ) )
+			lock ( RegexCache )
+				if ( !RegexCache.ContainsKey( pattern ) )
+					RegexCache[ pattern ] = new Regex( pattern, RegexOptions.Compiled );
 
-    [Microsoft.SqlServer.Server.SqlFunction(IsDeterministic = true, IsPrecise = true)]
-    public static SqlString GroupMatch(String input, String pattern, String group)
-    {
-        if (String.IsNullOrEmpty(input) || String.IsNullOrEmpty(pattern) || String.IsNullOrEmpty(group))
-        {
-            return new SqlString(null);
-        }
-        else
-        { 
-            Group g = Regex.Match(input, pattern).Groups[group];
+		return RegexCache[ pattern ];
+	}
 
-            return new SqlString(g.Success ? g.Value : null);
-        }
-    }
+	private static bool IsInvalid( params string[] values )
+	{
+		foreach ( var value in values )
+			if ( string.IsNullOrEmpty( value ) )
+				return true;
 
-    [Microsoft.SqlServer.Server.SqlFunction(IsDeterministic = true, IsPrecise = true)]
-    public static SqlString Replace(String input, String pattern, String replacement)
-    {
-        // the replacement string is not checked for an empty string because that is a valid replacement pattern
-        if (String.IsNullOrEmpty(input) || String.IsNullOrEmpty(pattern) || replacement == null)
-        {
-            return new SqlString(null);
-        }
-        else
-        {
-            return new SqlString(Regex.Replace(input, pattern, replacement));
-        }
-    }
+		return false;
+	}
 
-    [SqlFunction(DataAccess = DataAccessKind.None, FillRowMethodName = "FillMatches", TableDefinition = "Position int, MatchText nvarchar(max)")]
-    public static IEnumerable Matches(String input, String pattern)
-    {
-        List<RegexMatch> MatchCollection = new List<RegexMatch>();
-        if (!String.IsNullOrEmpty(input) && !String.IsNullOrEmpty(pattern))
-        {
-            //only run through the matches if the inputs have non-empty, non-null strings
-            foreach (Match m in Regex.Matches(input, pattern))
-            {
-                MatchCollection.Add(new RegexMatch(m.Index, m.Value));
-            }
-        }
-        return MatchCollection;
-    }
+	[SqlFunction( IsDeterministic = true )]
+	public static SqlString Match( String input, String pattern )
+	{
+		if ( IsInvalid( input, pattern ) )
+			return new SqlString( null );
 
-    [SqlFunction(DataAccess = DataAccessKind.None, FillRowMethodName = "FillMatches", TableDefinition = "Position int, MatchText nvarchar(max)")]
-    public static IEnumerable Split(String input, String pattern)
-    {
-        List<RegexMatch> MatchCollection = new List<RegexMatch>();
-        if (!String.IsNullOrEmpty(input) && !String.IsNullOrEmpty(pattern))
-        {
-            //only run through the splits if the inputs have non-empty, non-null strings
-            String[] splits = Regex.Split(input, pattern);
-            for (int i = 0; i < splits.Length; i++)
-            {
-                MatchCollection.Add(new RegexMatch(i, splits[i]));
-            }
-        }
+		var m = GetRegex( pattern ).Match( input );
+		return new SqlString( m.Success ? m.Value : null );
+	}
 
-        return MatchCollection;
-    }
 
-    public static void FillMatches(object match, out SqlInt32 Position, out SqlString MatchText)
-    {
-        RegexMatch rm = (RegexMatch)match;
-        Position = rm.Position;
-        MatchText = rm.MatchText;
-    }
+	[SqlFunction( IsDeterministic = true )]
+	public static SqlBoolean IsMatch( String input, String pattern )
+	{
+		if ( IsInvalid( input, pattern ) )
+			return new SqlBoolean( false );
 
-    private class RegexMatch
-    {
-        public SqlInt32 Position { get; set; }
-        public SqlString MatchText { get; set; }
+		return GetRegex( pattern ).IsMatch( input );
+	}
 
-        public RegexMatch(SqlInt32 position, SqlString match)
-        {
-            this.Position = position;
-            this.MatchText = match;
-        }
-    }
-};
+	[SqlFunction( IsDeterministic = true, IsPrecise = true )]
+	public static SqlString GroupMatch( String input, String pattern, String group )
+	{
+		if ( IsInvalid( input, pattern, group ) )
+			return new SqlString( null );
+		
+		var g = GetRegex( pattern ).Match( input ).Groups[ group ];
+		return new SqlString( g.Success ? g.Value : null );
+	}
 
+	[SqlFunction( IsDeterministic = true, IsPrecise = true )]
+	public static SqlString Replace( String input, String pattern, String replacement )
+	{
+		if ( IsInvalid( input, pattern, replacement ) )
+			return new SqlString( null );
+		
+		return new SqlString( GetRegex( pattern ).Replace( input, replacement ) );
+	}
+
+	[SqlFunction( DataAccess = DataAccessKind.None, FillRowMethodName = "FillMatches",
+		TableDefinition = "Position int, MatchText nvarchar(max)" )]
+	public static IEnumerable Matches( String input, String pattern )
+	{
+		var matchCollection = new List<RegexMatch>();
+		if ( IsInvalid( input, pattern ) )
+			return matchCollection;
+
+		foreach ( Match m in GetRegex( pattern ).Matches( input ) )
+			matchCollection.Add( new RegexMatch( m.Index, m.Value ) );
+
+		return matchCollection;
+	}
+
+	[SqlFunction( DataAccess = DataAccessKind.None, FillRowMethodName = "FillMatches",
+		TableDefinition = "Position int, MatchText nvarchar(max)" )]
+	public static IEnumerable Split( String input, String pattern )
+	{
+		var matchCollection = new List<RegexMatch>();
+		if ( IsInvalid( input, pattern ) )
+			return matchCollection;
+
+		var splits = GetRegex( pattern ).Split( input );
+		for ( int i = 0; i < splits.Length; i++ )
+			matchCollection.Add( new RegexMatch( i, splits[ i ] ) );
+
+		return matchCollection;
+	}
+
+	private class RegexMatch
+	{
+		public SqlInt32 Position { get; set; }
+		public SqlString MatchText { get; set; }
+
+		public RegexMatch( SqlInt32 position, SqlString match )
+		{
+			Position = position;
+			MatchText = match;
+		}
+	}
+}
